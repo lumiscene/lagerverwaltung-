@@ -29,20 +29,39 @@ const header=()=>`<header class="top"><div class="brand"><span class="brandmark"
 const nav=()=>`<nav class="bottom-nav" aria-label="Hauptnavigation">${[['lager','▦','Lager'],['material','◈','Material'],['buchen','⊞','Buchen'],['bestand','▤','Bestände'],['mehr','⚙','Mehr']].map(([key,ic,label])=>`<button data-tab="${key}" class="${activeTab===key?'active':''}"><span>${ic}</span><small>${label}</small></button>`).join('')}</nav>`;
 function render(){const app=$('#app');if(!app)return;app.innerHTML=header()+`<main class="content">${mode?renderMode():activeTab==='lager'?renderWarehouse():activeTab==='material'?renderMaterials():activeTab==='buchen'?renderBooking():activeTab==='bestand'?renderStocks():renderMore()}</main>`+nav();}
 function pageTitle(title,subtitle,right=''){return `<div class="page-title"><div><h1>${title}</h1><p class="muted">${subtitle}</p></div>${right}</div>`}
+// Regalansicht v0.2: Großboxen und sämtliche zugehörigen Fächer direkt anzeigen.
 function renderWarehouse(){
  const shelves=[...arr('shelves')].sort((a,b)=>a.id.localeCompare(b.id));
  const shelf=by('shelves',selectedShelf)||shelves[0];if(!shelf)return'<p>Kein Regal vorhanden</p>';
  const slots=arr('slots').filter(x=>x.shelfId===shelf.id).sort((a,b)=>a.index-b.index);
- const boxes=arr('bigboxes').filter(x=>x.slotId&&x.slotId.startsWith(shelf.id+'-'));
- return pageTitle('Lagerübersicht','Regal und Stellplatz auswählen',`<button class="button minor" data-action="scan">QR scannen</button>`)+
+ const occupied=slots.filter(x=>occupant(x.id));
+ const free=slots.filter(x=>!occupant(x.id));
+ return pageTitle('Lagerübersicht','Großboxen mit Inhalt direkt im Regal',`<button class="button minor" data-action="scan">QR scannen</button>`)+
  `<section class="summary"><div><strong>${arr('shelves').length}</strong><small>Regale</small></div><div><strong>${arr('bigboxes').length}</strong><small>Großboxen</small></div><div><strong>${arr('smallboxes').length}</strong><small>Kleinboxen</small></div><div><strong>${arr('wires').length}</strong><small>Drahtgebinde</small></div></section>`+
  `<label class="field">Regal<select id="shelf-select">${shelves.map(x=>option(x.id,x.name,x.id===shelf.id?x.id:'' )).join('')}</select></label>`+
- `<div class="sectionhead"><h2>${esc(shelf.name)}</h2><span class="muted">${slots.length} Stellplätze</span></div><div class="slotgrid">${slots.map(slot=>{
-  const x=occupant(slot.id);const s=x?stockForEntity(x):{state:'free',text:'frei'};
-  return `<button class="slot ${s.state}" data-action="detail-slot" data-id="${esc(slot.id)}"><strong>${esc(slot.id.split('-').pop())}</strong><span>${esc(x?.id||'frei')}</span><small>${esc(s.text)}</small></button>`;
- }).join('')}</div>`+
- `<div class="legend"><span><i class="dot ok"></i> i. O.</span><span><i class="dot low"></i> niedrig</span><span><i class="dot empty"></i> leer</span><span><i class="dot free"></i> frei</span></div>`+
+ `<div class="sectionhead"><h2>${esc(shelf.name)}</h2></div>`+
+ `<div class="regal-stack">${occupied.map(renderShelfPosition).join('')||'<div class="emptycard">Dieses Regal hat noch keine zugeordneten Großboxen oder Drahtgebinde.</div>'}</div>`+
+ (free.length?`<details class="free-positions"><summary>Freie Positionen (${free.length})</summary><div class="free-position-grid">${free.map(x=>`<button class="free-position" data-action="detail-slot" data-id="${esc(x.id)}">${esc(x.id.split('-').pop())} · frei</button>`).join('')}</div></details>`:'')+
+ `<div class="legend"><span><i class="dot ok"></i> i. O.</span><span><i class="dot low"></i> niedrig</span><span><i class="dot empty"></i> leer</span><span><i class="dot free"></i> unbelegt</span></div>`+
  `<div class="stack"><button class="button minor" data-action="mode" data-mode="move">↔ Umlagern / tauschen</button><button class="button minor" data-action="mode" data-mode="create-small">+ Kleinbox erfassen</button><button class="button minor" data-action="mode" data-mode="create-wire">+ Drahtrolle / Reststück erfassen</button></div>`;
+}
+function renderShelfPosition(slot){
+ const entity=occupant(slot.id),slotLabel=slot.id.split('-').pop();
+ if(!entity)return `<button class="free-position" data-action="detail-slot" data-id="${esc(slot.id)}">${esc(slotLabel)} · frei</button>`;
+ if(!('capacity' in entity)){
+  const m=material(entity.materialId),st=status(m,entity.lengthMm);
+  return `<article class="shelf-box"><div class="shelf-box-head"><button class="shelf-box-label" data-action="detail-slot" data-id="${esc(slot.id)}" aria-label="Regalplatz ${esc(slotLabel)} öffnen"><strong>${esc(slotLabel)}</strong></button><button class="shelf-box-title" data-action="detail-entity" data-kind="wire" data-id="${esc(entity.id)}"><strong>${esc(entity.id)} · ${esc(entity.kind||'Draht')}</strong><small>${esc(m?.code||'Material nicht zugeordnet')} · ${fmt(entity.lengthMm/1000,3)} m</small></button><span class="shelf-indicator ${st}" aria-label="${st}"></span></div></article>`;
+ }
+ const b=entity;
+ const cells=Array.from({length:b.capacity},(_,i)=>{
+  const pos=i+1,k=byPosition(b.id,pos),m=k?material(k.materialId):null;
+  const st=k?status(m,k.netG):'free';
+  const code=m?.code||(k?'ohne Material':'frei');
+  const quantity=k?`${fmt(k.netG)} g`:'—';
+  // Jede befüllte Kleinbox öffnet sich direkt; freie Fächer starten die Erfassung.
+  return `<button class="shelf-cell ${st}" data-action="${k?'detail-entity':'create-small-in-position'}" data-kind="small" data-id="${esc(k?.id||'')}" data-bigbox="${esc(b.id)}" data-position="${pos}" aria-label="Fach ${pos}: ${esc(code)}${k?', '+esc(quantity):''}"><span class="shelf-cell-number">${pos}</span><strong class="shelf-cell-code">${esc(code)}</strong><span class="shelf-cell-quantity">${esc(quantity)}</span>${k?`<small>${esc(k.id)}</small>`:''}</button>`;
+ }).join('');
+ return `<article class="shelf-box"><div class="shelf-box-head"><button class="shelf-box-label" data-action="detail-slot" data-id="${esc(slot.id)}" aria-label="Regalplatz ${esc(slotLabel)} öffnen"><strong>${esc(slotLabel)}</strong></button><button class="shelf-box-title" data-action="detail-entity" data-kind="big" data-id="${esc(b.id)}"><strong>${esc(b.id)} · ${esc(b.name||'Großbox')}</strong><small>Großbox öffnen / QR anzeigen</small></button></div><div class="shelf-cells">${cells}</div></article>`;
 }
 function stockForEntity(x){
  if('capacity' in x){let parts=arr('smallboxes').filter(s=>s.bigboxId===x.id);if(!parts.length)return{state:'free',text:'unbefüllt'};let st=parts.map(s=>status(material(s.materialId),s.netG));return{state:st.every(t=>t==='empty')?'empty':st.includes('low')||st.includes('empty')?'low':'ok',text:`${parts.length}/${x.capacity} belegt`};}
@@ -89,7 +108,7 @@ function renderMode(){
  switch(mode){
  case 'create-shelf':return screen('Regal hinzufügen',saveForm('create-shelf',field('Regal-ID',input('id','R11','','text','required pattern="[A-Za-z0-9-]+"'))+field('Name',input('name','Regal 11','','text','required'))+field('Anzahl Stellplätze',input('positions','8','8','number','min="1" max="200" required'))));
  case 'create-big':return screen('Großbox hinzufügen',saveForm('create-big',field('Box-ID',input('id','G016','','text','required'))+field('Name',input('name','Großbox 16'))+field('Anzahl Kleinboxfächer',input('capacity','15','15','number','min="1" max="100" required'))+field('Freier Regalstellplatz',selectField('slotId',[{value:'',label:'Noch nicht zuordnen'},...freeSlots()]))));
- case 'create-small':return screen('Kleinbox erfassen',saveForm('create-small',field('Kleinbox-ID',input('id','K001','','text','required'))+field('Leergewicht / Tara in g',input('tara','z. B. 82,4','','text','inputmode="decimal" required'),'Taragewicht ist fest an diese physische Box gebunden.')+field('Großbox',selectField('bigboxId',boxOptions()),'Die Einteilung gilt für aktuell freie Fächer.')+field('Fachnummer',input('position','z. B. 4','','number','min="1"'))+field('Material',selectField('materialId',[{value:'',label:'Noch kein Material'},...arr('materials').filter(x=>x.unit==='g').map(m=>({value:m.id,label:m.code}))]))+field('Anfangsbestand Netto (g)',input('netG','0','0','text','inputmode="decimal" required'))));
+ case 'create-small':return screen('Kleinbox erfassen',saveForm('create-small',field('Kleinbox-ID',input('id','K001','','text','required'))+field('Leergewicht / Tara in g',input('tara','z. B. 82,4','','text','inputmode="decimal" required'),'Taragewicht ist fest an diese physische Box gebunden.')+field('Großbox',selectField('bigboxId',boxOptions(),window._newSmallBigbox||''),'Die Einteilung gilt für aktuell freie Fächer.')+field('Fachnummer',input('position','z. B. 4',window._newSmallPosition||'','number','min="1"'))+field('Material',selectField('materialId',[{value:'',label:'Noch kein Material'},...arr('materials').filter(x=>x.unit==='g').map(m=>({value:m.id,label:m.code}))]))+field('Anfangsbestand Netto (g)',input('netG','0','0','text','inputmode="decimal" required'))));
  case 'create-wire':return screen('Drahtgebinde erfassen',saveForm('create-wire',field('Gebinde-ID',input('id','D001','','text','required'))+field('Gebindeart',selectField('kind',[{value:'Rolle',label:'Rolle'},{value:'Reststück',label:'Reststück'}]))+field('Drahtmaterial',selectField('materialId',[{value:'',label:'— Material auswählen —'},...arr('materials').filter(m=>m.unit==='mm').map(m=>({value:m.id,label:m.code}))]))+field('Restlänge in m',input('meters','z. B. 25,4','','text','inputmode="decimal" required'))+field('Freier Regalstellplatz',selectField('slotId',[{value:'',label:'Noch nicht zuordnen'},...freeSlots()]))));
  case 'create-material':return renderCreateMaterial();
  case 'weigh':return renderWeigh();
@@ -311,7 +330,8 @@ document.addEventListener('click',async e=>{
  const target=e.target.closest('[data-action]');if(!target)return;const {action,id,kind}=target.dataset;
  try{
   if(action==='back'){stopScan();mode=null;render();return}
-  if(action==='mode'){await enterMode(target.dataset.mode,id);return}
+  if(action==='mode'){if(target.dataset.mode==='create-small'){window._newSmallBigbox='';window._newSmallPosition=''}await enterMode(target.dataset.mode,id);return}
+  if(action==='create-small-in-position'){window._newSmallBigbox=target.dataset.bigbox;window._newSmallPosition=target.dataset.position;await enterMode('create-small');return}
   if(action==='detail-slot'){stopScan();window._detailKind='slot';window._detailId=id;mode='detail';render();return}
   if(action==='detail-material'){stopScan();window._detailKind='material';window._detailId=id;mode='detail';render();return}
   if(action==='detail-entity'){stopScan();window._detailKind=kind;window._detailId=id;mode='detail';render();return}
